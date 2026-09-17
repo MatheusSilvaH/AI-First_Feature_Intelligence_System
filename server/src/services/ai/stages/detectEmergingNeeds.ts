@@ -18,7 +18,9 @@ What does not count: the top of the leaderboard restated, a single loud account,
 
 Return fewer, better trends. Zero is a legitimate answer for a quiet period, and saying so honestly is worth more than five padded entries - this report is read precisely because it is short. Cite the cluster ids that evidence each trend, exactly as given.
 
-"Why now" is the field that earns this report its place. What changed recently, and what would a team regret not having noticed a quarter from now?`;
+"Why now" is the field that earns this report its place. What changed recently, and what would a team regret not having noticed a quarter from now?
+
+Write with plain ASCII punctuation: hyphens rather than em-dashes, straight quotes rather than curly ones, "..." rather than an ellipsis character. Anything fancier has to be escaped in the JSON you return, and a mis-escaped character reaches the reader as literal garbage.`;
 
 export interface EmergingNeedsInput {
   windowDays: number;
@@ -72,7 +74,7 @@ What is emerging?`;
     system: SYSTEM,
     user,
     promptVersion: PROMPT_VERSION,
-    maxTokens: 4_000,
+    maxTokens: 16_000,
     dryRunValue: () => dryRun(input),
   });
 

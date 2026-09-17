@@ -4,7 +4,7 @@ import type { Submitter } from "../../../domain/types.js";
 import { getScoringConfig } from "../../scoring/config.js";
 
 export const STAGE = "extract_need";
-export const PROMPT_VERSION = "v3";
+export const PROMPT_VERSION = "v4";
 
 const systemPrompt = (pillars: string[]): string => `You read raw feature requests and identify the customer problem underneath them.
 
@@ -20,7 +20,9 @@ How to work:
 Current product strategy pillars:
 ${pillars.map((p, i) => `${i + 1}. ${p}`).join("\n")}
 
-Write reasoning that cites the specific wording behind each judgment. A human reviewer must be able to check your work against the request text without asking you anything.`;
+Write reasoning that cites the specific wording behind each judgment. A human reviewer must be able to check your work against the request text without asking you anything.
+
+Write with plain ASCII punctuation: hyphens rather than em-dashes, straight quotes rather than curly ones, "..." rather than an ellipsis character. Anything fancier has to be escaped in the JSON you return, and a mis-escaped character reaches the reader as literal garbage.`;
 
 export interface ExtractNeedInput {
   requestId: string;

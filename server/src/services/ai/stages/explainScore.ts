@@ -17,7 +17,9 @@ Say what held it back, in the same concrete way.
 
 Then flag anything that makes the score untrustworthy, and be willing to undercut it. A high score resting on one request from one account is worth less than a middling score drawn from twelve accounts across two segments, and the total does not show that difference. If the extraction confidence was low, if every contributor is internal, if the support signals all arrived the same afternoon - say so plainly in the confidence note. A leader who cannot tell a solid 70 from a fragile 70 will eventually stop trusting all of them.
 
-Draw evidence bullets only from the supplied requests and support signals. Quote or closely paraphrase real submitter wording; it is the part a leader remembers.`;
+Draw evidence bullets only from the supplied requests and support signals. Quote or closely paraphrase real submitter wording; it is the part a leader remembers.
+
+Write with plain ASCII punctuation: hyphens rather than em-dashes, straight quotes rather than curly ones, "..." rather than an ellipsis character. Anything fancier has to be escaped in the JSON you return, and a mis-escaped character reaches the reader as literal garbage.`;
 
 export interface ExplainScoreInput {
   clusterTitle: string;
@@ -93,7 +95,7 @@ Explain this score.`;
     system: SYSTEM,
     user,
     promptVersion: PROMPT_VERSION,
-    maxTokens: 2_000,
+    maxTokens: 16_000,
     dryRunValue: () => dryRun(input),
   });
 

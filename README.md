@@ -76,6 +76,8 @@ Every stage uses `output_config.format` with a Zod schema (`services/ai/schemas.
 
 This is the current successor to the older "define a tool the model must call, to force JSON out of it" pattern — same goal, fewer moving parts, no fake tool that never executes. The schemas double as the validation boundary: nothing reaches a repository without passing through one.
 
+Schema-constrained does not mean character-perfect, though. In live runs the model occasionally intends a `\uXXXX` escape and emits a *different* valid escape first — so an em-dash arrives parsed as a carriage return followed by the literal text `u2014`. It validates fine against the schema, because it is still a string; it just reads as garbage. Two defences: the prose prompts ask for plain ASCII punctuation so the escape is never needed, and `repairEscapeArtifacts()` repairs it on the way out of `claudeClient`. Worth the twelve lines, because this text ends up in decision briefs and customer-facing emails.
+
 ### Model routing
 
 Two tiers, because paying Opus prices to classify a support ticket is waste:
@@ -91,6 +93,11 @@ Two tiers, because paying Opus prices to classify a support ticket is waste:
 | `emerging_needs` | **Opus 5** | Whole-corpus synthesis; the hardest reasoning in the system. |
 
 Both are env vars (`ANTHROPIC_MODEL_PRIMARY` / `_FAST`), so the split is tunable without a deploy.
+
+Two things the two-tier split forces you to handle, both found by running it rather than by reading docs:
+
+- **`output_config.effort` is not universal.** Haiku 4.5 rejects it with a 400 (`This model does not support the effort parameter`), which fails the entire stage rather than degrading. `supportsEffort()` in `claudeClient.ts` gates it, listing the families known to *reject* it so a newer model configured later gets the parameter by default instead of silently losing it.
+- **Budget for thinking tokens, not for the visible answer.** Thinking is on by default on Opus 5 and counts against `max_tokens`. The judgment stages are budgeted at 6–16K for outputs that render as a few hundred words; sized to the visible answer they would truncate mid-sentence.
 
 ---
 
@@ -141,6 +148,26 @@ Two guards on the model's output:
 - Below the confidence threshold, the merge becomes a **suggestion** rather than an action.
 
 That threshold comes from an asymmetry: a **false merge hides someone's request** — they are told their problem is being handled when it is not, and nobody notices until a renewal conversation. A **missed merge** just leaves a visible duplicate on the board. The costs are not symmetric, so the system is biased toward not merging, and the prompt says so explicitly.
+
+**That bias is easy to overdo, and the first live run did.** The original prompt stated the numeric threshold outright ("below 0.75 the merge is held for human review") *and* said to prefer the milder verdict when evidence was balanced. The result: of 32 requests the model auto-merged 3 and sent 12 to review, every one of them labelled `related` rather than `duplicate` — including "We need Okta provisioning" against "SAML single sign-on support", which is plainly one need. Confidence clustered at 0.72 and 0.68, parked just under the number the prompt had named.
+
+Removing the stated threshold and adding a counterweight about the cost of over-caution helped — precision rose to 0.80 — but recall only moved to 0.16. The verdicts were still `related @ 0.72`, and the cached rationales explained why:
+
+> *"Both surface the same underlying blocker — absence of centralized identity management — preventing adoption at scale… but they address different layers."*
+
+The model had correctly identified one shared need and then declined to merge because the **mechanisms** differed. That was not the model erring. The prompt's test was "would a single piece of work satisfy both requesters?", and under that test SAML SSO genuinely is not SCIM provisioning. It followed the instruction precisely; the instruction was wrong.
+
+**The real bug was an unspecified clustering granularity.** Nothing anywhere defined whether a cluster is one shippable change or one roadmap initiative. My ground-truth labels assumed the latter; my prompt asked for the former. For a prioritisation tool the answer has to be the initiative: a leader wants one row reading "enterprise identity — 4 requests, 3 enterprise accounts, $730k ARR" and then to decide scope, not four single-request rows they have to reassemble by hand. Consolidating so that reach becomes visible *is* the product.
+
+Three lessons, in the order they cost time:
+
+- **Specify the granularity of a judgment before tuning how the model makes it.** Two rounds of prompt work went into a caution/aggression dial when the actual defect was an undefined unit of analysis. "Same need" is not self-evident, and every reader — human or model — will pick a different level.
+- **Never name the decision threshold in the prompt.** Confidence pinned at 0.72 under two very different prompts is the signature: the model optimises against the number instead of the requests. Confidence is now described only as a calibrated probability with anchors, with no mention of what happens to it downstream.
+- **Caution is not neutral, and the prompt must say so.** Guidance about the expense of false merges needs an explicit counterweight, or `related` becomes a way to avoid committing. Routing every borderline pair to a human hands back exactly the manual de-duplication the system exists to remove.
+
+None of this was visible in dry-run; against the fixture everything looked correct. The labelled corpus is what made it measurable — which is the argument for keeping ground truth in the seed rather than just sample text.
+
+One caveat on the current prompt: it now uses identity and data-export as worked examples of "different mechanism, same need", and those are drawn from the seed corpus. That risks teaching to the test. The underlying principle is general, but the honest next step is an eval set the prompt has never seen.
 
 ### Scoring: AI judgment, deterministic arithmetic
 

@@ -1,5 +1,21 @@
-import "dotenv/config";
+import { config as loadDotenv } from "dotenv";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { z } from "zod";
+
+/**
+ * `.env` lives at the repository root, but npm workspace scripts run with the
+ * working directory set to `server/`, so a bare `dotenv/config` would look in
+ * the wrong place and silently find nothing. Resolve both locations relative to
+ * this file instead - three levels up is the repo root from `src/config` and
+ * from `dist/config` alike. A `server/.env` wins, so a developer can override
+ * one setting locally without editing the shared file.
+ */
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = join(here, "..", "..", "..");
+
+loadDotenv({ path: join(repoRoot, ".env"), quiet: true });
+loadDotenv({ path: join(repoRoot, "server", ".env"), override: true, quiet: true });
 
 /** Env vars are always strings; accept the usual truthy spellings. */
 const booleanish = (fallback: boolean) =>

@@ -39,6 +39,19 @@ export function resolveModel(tier: ModelTier): string {
   return tier === "primary" ? env.ANTHROPIC_MODEL_PRIMARY : env.ANTHROPIC_MODEL_FAST;
 }
 
+/**
+ * `output_config.effort` is not universally supported - Haiku 4.5 and the
+ * 4.5-era Sonnet models reject it outright with a 400, which fails the whole
+ * stage rather than degrading. Send it only where it is understood.
+ *
+ * Listed as families known to reject it rather than families known to accept
+ * it, so a newer model added to the env config gets the parameter by default
+ * instead of silently losing it.
+ */
+export function supportsEffort(model: string): boolean {
+  return !/haiku|sonnet-4-5|claude-[123]/i.test(model);
+}
+
 export interface StructuredCallOptions<S extends z.ZodType> {
   /** Pipeline stage name - used for cache partitioning and telemetry. */
   stage: string;
@@ -50,6 +63,11 @@ export interface StructuredCallOptions<S extends z.ZodType> {
   user: string;
   /** Bumped whenever `system` changes, so old cache entries are not reused. */
   promptVersion: string;
+  /**
+   * Output budget. On models where thinking is on by default (Opus 5), the
+   * reasoning tokens count against this too, so judgment stages need far more
+   * headroom than the length of their visible answer suggests.
+   */
   maxTokens?: number;
   effort?: "low" | "medium" | "high" | "xhigh" | "max";
   /** Set false for stages whose output should always be recomputed. */
@@ -65,6 +83,41 @@ export interface StructuredCallResult<T> {
 }
 
 const MAX_ATTEMPTS = 3;
+
+/**
+ * Repairs a JSON escaping artifact observed on grammar-constrained output.
+ *
+ * The model intends a `\uXXXX` escape for a character like an em-dash, but
+ * emits a *different* valid escape first - `\r`, `\n`, `\t` - followed by the
+ * literal text `uXXXX`. After parsing, an em-dash arrives as a carriage return
+ * plus the four characters "u2014". Unrepaired it reaches decision briefs and
+ * customer-facing emails verbatim ("a one-off annoyance u2014 three hours").
+ *
+ * The prompts also ask for plain ASCII punctuation, which avoids the escape
+ * entirely; this is the backstop for when the model reaches for a fancy
+ * character anyway.
+ */
+const ESCAPE_ARTIFACT = /[\r\n\t\f\v]u([0-9a-fA-F]{4})/g;
+
+export function repairEscapeArtifacts<T>(value: T): T {
+  if (typeof value === "string") {
+    return value.replace(ESCAPE_ARTIFACT, (_match, hex: string) =>
+      String.fromCodePoint(Number.parseInt(hex, 16)),
+    ) as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => repairEscapeArtifacts(item)) as T;
+  }
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        repairEscapeArtifacts(v),
+      ]),
+    ) as T;
+  }
+  return value;
+}
 
 /**
  * Runs one pipeline stage and returns schema-validated JSON.
@@ -141,7 +194,13 @@ export async function structuredCall<S extends z.ZodType>(
         messages: [{ role: "user", content: options.user }],
         output_config: {
           format: zodOutputFormat(options.schema),
-          effort: options.effort ?? (options.tier === "primary" ? env.ANTHROPIC_EFFORT : "low"),
+          ...(supportsEffort(model)
+            ? {
+                effort:
+                  options.effort ??
+                  (options.tier === "primary" ? env.ANTHROPIC_EFFORT : "low"),
+              }
+            : {}),
         },
       });
 
@@ -161,10 +220,11 @@ export async function structuredCall<S extends z.ZodType>(
         );
       }
 
-      const parsed = response.parsed_output as Out | null;
-      if (parsed === null || parsed === undefined) {
+      const rawParsed = response.parsed_output as Out | null;
+      if (rawParsed === null || rawParsed === undefined) {
         throw new AiPipelineError(options.stage, "response contained no parseable JSON output");
       }
+      const parsed = repairEscapeArtifacts(rawParsed);
 
       aiCacheRepo.logCall({
         stage: options.stage,
@@ -220,9 +280,14 @@ function isRetryable(err: unknown): boolean {
   if (err instanceof Anthropic.RateLimitError) return true;
   if (err instanceof Anthropic.APIConnectionError) return true;
   if (err instanceof Anthropic.APIError) return err.status !== undefined && err.status >= 500;
-  // AiPipelineError covers truncation and unparseable output. Both are worth one
-  // more roll of the dice; a refusal is not, but re-asking is cheap and bounded.
-  return err instanceof AiPipelineError;
+  if (err instanceof AiPipelineError) return true;
+
+  // The SDK throws a plain Error when the response is not parseable JSON, which
+  // in practice means the output was truncated at max_tokens. It throws during
+  // parsing, so it escapes the explicit stop_reason check below - and being a
+  // bare Error it would otherwise be classed unretryable and fail the stage on
+  // the first attempt. Observed live on a long scoring rationale.
+  return err instanceof Error && /failed to parse structured output/i.test(err.message);
 }
 
 function backoffMs(attempt: number, err: unknown): number {

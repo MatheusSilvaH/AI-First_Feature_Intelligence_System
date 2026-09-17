@@ -98,3 +98,59 @@ started both servers.
     still pass.
   - Started: API on :4000 (AI_DRY_RUN=true, ./data/dev.db) and Vite on :5173.
     Verified over HTTP; the rendered UI still has not been opened in a browser.
+
+[2026-09-17T14:30:00Z]
+PROMPT: "rebuild the aplication to aply the anthropic api key and proccess the data
+using ai", then "start the app so i can test".
+RESPONSE: Wired in the real key, fixed four defects that only appear in live mode,
+processed the 32-request corpus through Claude three times while iterating the
+duplicate-detection prompt, and started the stack.
+  SECURITY: the key had been pasted into .env.example, which is a *tracked*
+  file (committed as 1e09171). Verified via `git grep` over all refs that the
+  key string reached no commit, moved it to the git-ignored .env, and restored
+  the placeholder. Worth rotating if that file was ever shared.
+  LIVE-ONLY DEFECTS FIXED:
+   1. .env sits at the repo root but workspace scripts run from server/, so
+      dotenv found nothing. Now resolved relative to the module.
+   2. Haiku 4.5 returns 400 on output_config.effort, failing the whole stage.
+      Gated by supportsEffort().
+   3. Thinking tokens count against max_tokens; a scoring call truncated
+      mid-JSON. The SDK throws during parsing, so it escaped the stop_reason
+      guard AND was classed unretryable. Budgets raised, parse errors retried.
+   4. Real data corruption: the model intends \u2014 but emits \r + literal
+      "u2014", so an em-dash reached the DB as "annoyance u2014 three hours".
+      Schema-valid, still garbage. Repaired in claudeClient + prompts ask for
+      ASCII punctuation. 7 new tests (51 total).
+  PROMPT ITERATION, measured against the seed's ground-truth labels:
+   run 1 (v3): precision 0.37 / recall 0.40 -> the prompt named the 0.75
+     threshold outright and said to prefer the milder verdict; the model parked
+     confidence at 0.72 and labelled everything "related".
+   run 2 (v4): precision 0.80 / recall 0.16 -> threshold removed, but the real
+     bug surfaced: clustering GRANULARITY was never specified. The prompt asked
+     "would one piece of work satisfy both?", under which SAML SSO != SCIM. The
+     model followed the instruction correctly; the instruction was wrong. My
+     labels assumed roadmap-initiative level.
+   run 3 (v5): precision 1.00 / recall 0.32 -> regrouped at initiative level.
+     The identity family now merges correctly (4 requests, 5 accounts, score
+     86.3, top of the board).
+  OPEN, NOT FIXED: recall is still low. Two known causes, both diagnosed:
+   (a) Confidence is verdict-coupled, not calibrated - across three different
+       prompts the model emitted exactly 0.92 for every "duplicate" and exactly
+       0.72 for every "related". The 0.75 auto-merge threshold is therefore
+       doing nothing; the verdict is the only real signal.
+   (b) The v5 prompt contradicts itself: it says "different mechanism is not a
+       different need" (merge) while also saying "when the user or the outcome
+       differs, the shared noun is a coincidence" (split). Bulk-export requests
+       have genuinely different consumers, so the model splits them. The rule
+       needs to test whether the CAPABILITY being built is the same, not
+       whether the requesters' motivations match.
+   Symptom visible on the dashboard: "Custom roles for different teams" and
+   "Granular permissions" sit as two separate rows for one need.
+  Also of note: the v5 prompt uses identity and data-export as worked examples,
+  both drawn from the seed corpus - so improvement on identity is partly
+  teaching to the test. An eval set the prompt has never seen is the honest
+  next step.
+  STARTED: API :4000 (aiMode live, Opus 5 + Haiku 4.5) and Vite :5173. 32
+  requests -> 28 needs, 12.5% consolidation, 10 themes, 17 support signals, 12
+  pending reviews, 100% rationale completeness. Three live runs cost ~$2.50.
+  Still not verified: the rendered UI in a browser.

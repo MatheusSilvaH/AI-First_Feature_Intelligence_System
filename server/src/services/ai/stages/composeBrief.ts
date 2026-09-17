@@ -24,7 +24,9 @@ Distinguish what you know from what you are inferring. Where the evidence is thi
 
 The next step is one concrete action a named person could take this week - a call, a prototype, a data pull. Not "prioritise accordingly".
 
-Write in plain sentences. No headings inside fields, no bullet symbols, no hedging stacks like "it may potentially be worth considering".`;
+Write in plain sentences. No headings inside fields, no bullet symbols, no hedging stacks like "it may potentially be worth considering".
+
+Write with plain ASCII punctuation: hyphens rather than em-dashes, straight quotes rather than curly ones, "..." rather than an ellipsis character. Anything fancier has to be escaped in the JSON you return, and a mis-escaped character reaches the reader as literal garbage.`;
 
 export interface ComposeBriefInput {
   clusterTitle: string;
@@ -82,7 +84,7 @@ Write the decision brief.`;
     system: BRIEF_SYSTEM,
     user,
     promptVersion: PROMPT_VERSION,
-    maxTokens: 3_000,
+    maxTokens: 10_000,
     dryRunValue: () => dryRunBrief(input),
   });
 
@@ -105,7 +107,9 @@ Promise nothing that is not in the input. No dates, no releases, no "it's on the
 
 Never expose internal machinery: no priority scores, no ARR, no other customers' names, no team-internal debate. The reader should not be able to tell an automated pipeline produced this.
 
-Six sentences at most. Warm, direct, and finished - no invitation to reply unless there is a genuine question to ask.`;
+Six sentences at most. Warm, direct, and finished - no invitation to reply unless there is a genuine question to ask.
+
+Write with plain ASCII punctuation: hyphens rather than em-dashes, straight quotes rather than curly ones, "..." rather than an ellipsis character. Anything fancier has to be escaped in the JSON you return, and a mis-escaped character reaches the reader as literal garbage.`;
 
 export interface ComposeUpdateInput {
   clusterTitle: string;
@@ -137,7 +141,7 @@ Write the update.`;
     system: UPDATE_SYSTEM,
     user,
     promptVersion: PROMPT_VERSION,
-    maxTokens: 1_500,
+    maxTokens: 6_000,
     // Each send is a distinct communication act; reusing a cached body would
     // resend stale wording after the status moved on.
     cacheable: false,
