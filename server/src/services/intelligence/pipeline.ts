@@ -224,6 +224,13 @@ function createClusterFor(
   canonicalNeed: string,
   decision: { decidedBy: "ai" | "human"; confidence: number; rationale: string },
 ): string {
+  // Analysis is not guaranteed to run only once: a job that fails partway is
+  // retried from the top, and re-analysing a request that already has a cluster
+  // would strand the old one. An abandoned cluster keeps no requests, never
+  // gets scored, and still appears in the ranked list as an empty row - so
+  // release it here rather than leaving the list to filter it out later.
+  const previousClusterId = requestsRepo.findById(requestId)?.clusterId ?? null;
+
   const cluster = clustersRepo.create({ title, canonicalNeed });
   requestsRepo.setCluster(requestId, cluster.id);
   clustersRepo.recordDecision({
@@ -233,6 +240,11 @@ function createClusterFor(
     confidence: decision.confidence,
     rationale: decision.rationale,
   });
+
+  if (previousClusterId && previousClusterId !== cluster.id) {
+    clustersRepo.deleteIfEmpty(previousClusterId);
+  }
+
   return cluster.id;
 }
 

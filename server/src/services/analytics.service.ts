@@ -149,11 +149,27 @@ export interface RankedQuery {
   limit?: number;
   themeId?: string;
   status?: ClusterStatus;
+  /** Case-insensitive substring match on the cluster title. */
+  search?: string;
 }
 
-export function topClusters(query: RankedQuery = {}): RankedCluster[] {
-  const where: string[] = [];
-  const params: Array<string | number> = [];
+/** The ranking every list and rank lookup must agree on, or paging misaligns. */
+const RANKED_ORDER = "ORDER BY total DESC, request_count DESC, cluster_id ASC";
+
+/**
+ * `%` and `_` are LIKE wildcards. A user typing "100%" into the search box
+ * would otherwise match everything, so they are escaped and the escape
+ * character declared on the LIKE.
+ */
+const likePattern = (search: string): string =>
+  `%${search.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+
+function buildFilters(query: RankedQuery): { sql: string; params: string[] } {
+  // A cluster with no requests is an artefact, not a need - it can only arise
+  // from a request being moved out of it. It would otherwise rank last with a
+  // zero score and an empty rationale, occupying a row in the paged list.
+  const where: string[] = ["EXISTS (SELECT 1 FROM requests r WHERE r.cluster_id = c.id)"];
+  const params: string[] = [];
 
   if (query.themeId) {
     where.push("c.theme_id = ?");
@@ -163,17 +179,125 @@ export function topClusters(query: RankedQuery = {}): RankedCluster[] {
     where.push("c.status = ?");
     params.push(query.status);
   }
+  if (query.search && query.search.trim() !== "") {
+    where.push("LOWER(c.title) LIKE LOWER(?) ESCAPE '\\'");
+    params.push(likePattern(query.search.trim()));
+  }
+
+  return {
+    sql: where.length ? `WHERE ${where.join(" AND ")}` : "",
+    params,
+  };
+}
+
+export function topClusters(query: RankedQuery = {}): RankedCluster[] {
+  const filters = buildFilters(query);
 
   const sql = `${RANKED_SQL}
-    ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-    ORDER BY total DESC, request_count DESC
+    ${filters.sql}
+    ${RANKED_ORDER}
     LIMIT ?`;
 
   return rows<RankedRow>(
     getDb()
       .prepare(sql)
-      .all(...params, query.limit ?? 20),
+      .all(...filters.params, query.limit ?? 20),
   ).map(toRanked);
+}
+
+export interface ClusterPageQuery extends RankedQuery {
+  page: number;
+  pageSize: number;
+}
+
+export interface ClusterPageResult {
+  items: RankedCluster[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+}
+
+/**
+ * One page of the ranked cluster list.
+ *
+ * Paged server-side rather than shipping everything to the browser: a ranked
+ * cluster carries its score rationale, which measures ~1.4KB each, so a
+ * few thousand clusters would be a multi-megabyte payload on every dashboard
+ * load. Filtering runs in SQL for the same reason - it has to apply to the
+ * whole dataset, not to whichever page the client happens to be holding.
+ */
+export function listRankedClusters(query: ClusterPageQuery): ClusterPageResult {
+  const db = getDb();
+  const filters = buildFilters(query);
+
+  const total =
+    (
+      row<{ n: number }>(
+        db
+          .prepare(`SELECT COUNT(*) AS n FROM (${RANKED_SQL} ${filters.sql})`)
+          .get(...filters.params),
+      ) ?? { n: 0 }
+    ).n;
+
+  const totalPages = Math.max(1, Math.ceil(total / query.pageSize));
+  // A filter that shrinks the result set can strand the caller past the end.
+  const page = Math.min(Math.max(1, query.page), totalPages);
+
+  const items = rows<RankedRow>(
+    db
+      .prepare(
+        `${RANKED_SQL}
+         ${filters.sql}
+         ${RANKED_ORDER}
+         LIMIT ? OFFSET ?`,
+      )
+      .all(...filters.params, query.pageSize, (page - 1) * query.pageSize),
+  ).map(toRanked);
+
+  return { items, page, pageSize: query.pageSize, total, totalPages };
+}
+
+export interface ClusterLocation {
+  clusterId: string;
+  found: boolean;
+  rank: number | null;
+  page: number | null;
+}
+
+/**
+ * Where a specific cluster sits in the current ranking.
+ *
+ * This is what makes a deep link land on the right page: the client knows only
+ * an id, and only the database knows that the id is 27th by score and
+ * therefore on page 3. Returns `found: false` for an id that no longer exists
+ * - merged away or deleted - so the caller can say so instead of rendering an
+ * empty page.
+ */
+export function locateCluster(clusterId: string, query: RankedQuery, pageSize: number): ClusterLocation {
+  const filters = buildFilters(query);
+
+  const found = row<{ rn: number }>(
+    getDb()
+      .prepare(
+        `SELECT rn FROM (
+           SELECT cluster_id,
+                  ROW_NUMBER() OVER (${RANKED_ORDER}) AS rn
+             FROM (${RANKED_SQL} ${filters.sql})
+         )
+          WHERE cluster_id = ?`,
+      )
+      .get(...filters.params, clusterId),
+  );
+
+  if (!found) return { clusterId, found: false, rank: null, page: null };
+
+  return {
+    clusterId,
+    found: true,
+    rank: found.rn,
+    page: Math.max(1, Math.ceil(found.rn / pageSize)),
+  };
 }
 
 export interface ThemeBreakdown {
@@ -189,9 +313,14 @@ export interface ThemeBreakdown {
 
 /** Ranked features grouped by theme - the "by area" half of the dashboard. */
 export function byTheme(topN = 3): ThemeBreakdown[] {
-  const all = rows<RankedRow>(getDb().prepare(`${RANKED_SQL} ORDER BY total DESC`).all()).map(
-    toRanked,
-  );
+  // Shares buildFilters so the empty-cluster exclusion applies here too, and
+  // the theme cards cannot disagree with the ranked list about what exists.
+  const filters = buildFilters({});
+  const all = rows<RankedRow>(
+    getDb()
+      .prepare(`${RANKED_SQL} ${filters.sql} ${RANKED_ORDER}`)
+      .all(...filters.params),
+  ).map(toRanked);
 
   const grouped = new Map<string, RankedCluster[]>();
   for (const c of all) {

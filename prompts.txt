@@ -154,3 +154,57 @@ duplicate-detection prompt, and started the stack.
   requests -> 28 needs, 12.5% consolidation, 10 themes, 17 support signals, 12
   pending reviews, 100% rationale completeness. Three live runs cost ~$2.50.
   Still not verified: the rendered UI in a browser.
+
+[2026-09-17T16:45:00Z]
+PROMPT: Add search/filter and pagination to the Dashboard cluster list (10 per
+page, score-ordered), reflect filter and page in the URL, make it deep-linkable
+from a request's detail page by stable cluster id, resolve the correct page for
+a linked cluster wherever it ranks, expand/highlight it on arrival, and fail
+gracefully for an unknown id. Confirm whether a paginated API endpoint is needed
+or the full list can be paged client-side.
+RESPONSE: Implemented server-side. Measured first to answer the question rather
+than guess: a ranked cluster is ~1.4KB (the score rationale dominates, avg 713
+chars), so shipping the whole list to page client-side would be ~1.4MB at the
+README's stated scale of thousands of clusters. Paging and filtering therefore
+run in SQL.
+  BACKEND
+   - New GET /api/analytics/clusters with search / page / pageSize / focus.
+     Search is a case-insensitive substring on the title; LIKE wildcards in user
+     input are escaped, so typing "100%" does not match everything.
+   - locateCluster() resolves where a cluster id sits in the current ranking via
+     ROW_NUMBER over the existing ranked query, so a deep link holding only an
+     id lands on the right page in ONE round trip - the route serves the focus
+     page directly rather than making the client ask twice.
+   - Unknown/merged id returns focus.found=false with the list still rendered,
+     never an error.
+   - A single RANKED_ORDER constant is now shared by the list, the count and the
+     rank lookup; if those three disagreed, paging would silently misalign.
+   - Removed topClusters from /analytics/dashboard: the list pages on its own
+     now, so paging must not refetch the charts.
+  FRONTEND
+   - ClusterExplorer component: debounced search, windowed pagination controls,
+     URL params q / page / cluster.
+   - Deep-link arrival uses replace, so exactly one history entry is created and
+     Back returns to the request page as required.
+   - Typing or changing page clears the focus param - without that the server
+     would keep serving the focused cluster's page and pagination would appear
+     dead.
+   - Extracted useDebounced into a shared hook (BrowsePage had a local copy).
+  BUG FOUND AND FIXED, exposed by this feature: one cluster had zero requests,
+  no score and an empty rationale, and rendered as a blank last row. Previously
+  the top-10 cut-off hid it. Root cause: analyzeRequest was not idempotent - a
+  retried job re-ran it, created a second cluster for the same request and
+  orphaned the first. Fixed at the source (createClusterFor now releases the
+  previous cluster) and guarded in the query (ranked lists exclude clusters with
+  no requests, byTheme included so the theme cards cannot disagree).
+  Tests 51 -> 62: ordering, no overlap/skip across pages, filter re-paginating
+  over the full corpus, case-insensitivity, LIKE-wildcard escaping, focus on a
+  non-first page, unknown id, page clamping, empty results, and the orphan
+  regression.
+  SPEC NOTE: the brief said to "pre-fill the filter" on deep-link arrival, but
+  that conflicts with the acceptance criterion that the cluster be shown on its
+  correct page "regardless of where it ranks by score" - pre-filling by title
+  would put it on page 1 of a filtered set and make rank irrelevant. Chose to
+  keep the full score-ordered list, jump to the cluster's true page, and
+  highlight plus expand it, which satisfies the acceptance criteria and
+  preserves the ranking context a dashboard exists to show.

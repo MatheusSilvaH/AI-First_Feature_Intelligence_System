@@ -3,6 +3,7 @@ import { body, query, validateBody, validateQuery } from "../middleware/validate
 import { readLimiter, aiTriggerLimiter, writeLimiter } from "../middleware/rateLimit.js";
 import {
   TopClustersQuerySchema,
+  ClusterPageQuerySchema,
   TrendQuerySchema,
   EmergingQuerySchema,
   UpdateScoringConfigSchema,
@@ -24,8 +25,10 @@ export const analyticsRouter = Router();
  */
 analyticsRouter.get("/dashboard", readLimiter, validateQuery(TrendQuerySchema), (req, res) => {
   const { days } = query<z.infer<typeof TrendQuerySchema>>(req);
+  // The ranked cluster list is deliberately not included here any more - it is
+  // paged and filtered independently via /analytics/clusters, so paging must
+  // not refetch the charts and the charts must not refetch the list.
   res.json({
-    topClusters: analytics.topClusters({ limit: 10 }),
     byTheme: analytics.byTheme(3),
     volumeTrend: analytics.volumeTrend(days),
     submitterMix: analytics.submitterMix(),
@@ -38,6 +41,38 @@ analyticsRouter.get("/top", readLimiter, validateQuery(TopClustersQuerySchema), 
   const q = query<z.infer<typeof TopClustersQuerySchema>>(req);
   res.json({ clusters: analytics.topClusters(q) });
 });
+
+/**
+ * GET /api/analytics/clusters
+ *
+ * The paged, searchable ranked list behind the dashboard. Paging and filtering
+ * are done in SQL over the whole dataset, not over a previously-loaded page.
+ *
+ * `?focus=<clusterId>` additionally resolves where that cluster sits in the
+ * current ranking, so a deep link carrying only an id can land on the right
+ * page. An id that no longer exists comes back as `found: false` rather than
+ * an error, so the UI can say "not found" instead of rendering nothing.
+ */
+analyticsRouter.get(
+  "/clusters",
+  readLimiter,
+  validateQuery(ClusterPageQuerySchema),
+  (req, res) => {
+    const q = query<z.infer<typeof ClusterPageQuerySchema>>(req);
+    const filters = { search: q.search, themeId: q.themeId, status: q.status };
+
+    const focus = q.focus ? analytics.locateCluster(q.focus, filters, q.pageSize) : null;
+
+    // When a focus target resolves, serve the page it lives on. That saves the
+    // client a second round trip on the deep-link path.
+    const page = focus?.found && focus.page ? focus.page : q.page;
+
+    res.json({
+      ...analytics.listRankedClusters({ ...filters, page, pageSize: q.pageSize }),
+      focus,
+    });
+  },
+);
 
 analyticsRouter.get("/by-theme", readLimiter, (_req, res) => {
   res.json({ themes: analytics.byTheme(5) });

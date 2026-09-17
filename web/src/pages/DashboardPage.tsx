@@ -1,6 +1,6 @@
-import { useState } from "react";
-import { Link } from "react-router-dom";
-import { useQuery, useMutation } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
+import { useQuery, useMutation, keepPreviousData } from "@tanstack/react-query";
 import {
   Bar,
   BarChart,
@@ -15,6 +15,7 @@ import {
   YAxis,
 } from "recharts";
 import { api } from "../api/client";
+import { useDebounced } from "../hooks/useDebounced";
 import type { RankedCluster } from "../api/types";
 import {
   AiPanel,
@@ -50,15 +51,13 @@ const tooltipStyle = {
 };
 
 export function DashboardPage() {
-  const [expanded, setExpanded] = useState<string | null>(null);
-
   const query = useQuery({ queryKey: ["dashboard"], queryFn: () => api.dashboard(90) });
 
   if (query.isLoading) return <Loading rows={4} />;
   if (query.isError) return <ErrorNotice error={query.error} />;
   if (!query.data) return null;
 
-  const { topClusters, byTheme, volumeTrend, submitterMix, metrics } = query.data;
+  const { byTheme, volumeTrend, submitterMix, metrics } = query.data;
 
   if (metrics.totalRequests === 0) {
     return (
@@ -124,30 +123,7 @@ export function DashboardPage() {
         </div>
       ) : null}
 
-      {/* --- ranked leaderboard --- */}
-      <section className="card">
-        <div className="spread">
-          <h2>Top priorities overall</h2>
-          <span className="faint small">Ranked by AI priority score</span>
-        </div>
-        {topClusters.length === 0 ? (
-          <p className="faint">Nothing scored yet.</p>
-        ) : (
-          <div>
-            {topClusters.map((cluster, index) => (
-              <RankedRow
-                key={cluster.clusterId}
-                cluster={cluster}
-                rank={index + 1}
-                expanded={expanded === cluster.clusterId}
-                onToggle={() =>
-                  setExpanded(expanded === cluster.clusterId ? null : cluster.clusterId)
-                }
-              />
-            ))}
-          </div>
-        )}
-      </section>
+      <ClusterExplorer />
 
       {/* --- by theme --- */}
       <section className="card">
@@ -304,19 +280,267 @@ export function DashboardPage() {
   );
 }
 
+const PAGE_SIZE = 10;
+
+/**
+ * The ranked cluster list: searchable, paged, and deep-linkable.
+ *
+ * URL contract (all optional, all shareable and reload-safe):
+ *   ?q=<text>        active title filter
+ *   ?page=<n>        1-based page within the filtered ranking
+ *   ?cluster=<id>    a cluster to locate and open, wherever it ranks
+ *
+ * Search and paging are resolved server-side against the whole dataset - see
+ * `api.rankedClusters`. The client never holds the full list, so it cannot and
+ * does not filter locally.
+ */
+function ClusterExplorer() {
+  const [params, setParams] = useSearchParams();
+
+  const urlSearch = params.get("q") ?? "";
+  const focusId = params.get("cluster");
+  const urlPage = Math.max(1, Number(params.get("page") ?? 1) || 1);
+
+  // The input stays immediate so typing never feels laggy; only the fetch waits.
+  const [searchInput, setSearchInput] = useState(urlSearch);
+  const search = useDebounced(searchInput, 250);
+
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [missingCluster, setMissingCluster] = useState<string | null>(null);
+
+  const query = useQuery({
+    queryKey: ["ranked-clusters", { search, page: urlPage, focus: focusId }],
+    queryFn: () =>
+      api.rankedClusters({
+        search: search || undefined,
+        page: urlPage,
+        pageSize: PAGE_SIZE,
+        focus: focusId ?? undefined,
+      }),
+    // Keeps the current page on screen while the next loads, rather than
+    // collapsing the list to a spinner on every keystroke.
+    placeholderData: keepPreviousData,
+  });
+
+  const data = query.data;
+  const focus = data?.focus ?? null;
+
+  // Reconcile a deep link against what the server resolved. Runs once per
+  // response; every write here is `replace`, so arriving via a cluster link
+  // leaves exactly one history entry and Back returns to the request page.
+  useEffect(() => {
+    if (!focus) return;
+
+    if (!focus.found) {
+      setMissingCluster(focus.clusterId);
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("cluster");
+          return next;
+        },
+        { replace: true },
+      );
+      return;
+    }
+
+    setMissingCluster(null);
+    setExpanded(focus.clusterId);
+
+    // The server serves the focused cluster's real page regardless of what we
+    // asked for; bring the URL into line so a reload lands in the same place.
+    if (focus.page && focus.page !== urlPage) {
+      setParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.set("page", String(focus.page));
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [focus, urlPage, setParams]);
+
+  // Bring the focused row into view once it has actually rendered.
+  useEffect(() => {
+    if (!focusId || !data) return;
+    const el = document.getElementById(`cluster-${focusId}`);
+    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focusId, data]);
+
+  /** Typing is browsing: it resets paging and cancels any deep-link focus. */
+  const onSearchChange = (value: string) => {
+    setSearchInput(value);
+    setMissingCluster(null);
+    setParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (value.trim()) next.set("q", value);
+        else next.delete("q");
+        next.delete("page");
+        next.delete("cluster");
+        return next;
+      },
+      // Replace, or every keystroke would become a history entry.
+      { replace: true },
+    );
+  };
+
+  /**
+   * Explicit page changes push, so Back steps through pages. The focus param
+   * is dropped: leaving it would make the server keep serving the focused
+   * cluster's page and the pagination controls would appear dead.
+   */
+  const goToPage = (next: number) => {
+    setParams((prev) => {
+      const updated = new URLSearchParams(prev);
+      updated.set("page", String(next));
+      updated.delete("cluster");
+      return updated;
+    });
+  };
+
+  const page = data?.page ?? urlPage;
+  const totalPages = data?.totalPages ?? 1;
+
+  return (
+    <section className="card">
+      <div className="spread">
+        <h2>Priorities</h2>
+        <span className="faint small">Ranked by AI priority score</span>
+      </div>
+
+      <div className="filters" style={{ marginTop: "0.75rem", marginBottom: "1rem" }}>
+        <input
+          type="search"
+          value={searchInput}
+          onChange={(e) => onSearchChange(e.target.value)}
+          placeholder="Filter by name…"
+          aria-label="Filter clusters by name"
+        />
+        {searchInput ? (
+          <button type="button" onClick={() => onSearchChange("")}>
+            Clear
+          </button>
+        ) : null}
+      </div>
+
+      {missingCluster ? (
+        <div className="notice error" role="status" style={{ marginBottom: "1rem" }}>
+          That cluster no longer exists — it may have been merged into another need or deleted.
+          Showing the full list.
+        </div>
+      ) : null}
+
+      {query.isError ? <ErrorNotice error={query.error} /> : null}
+      {query.isLoading && !data ? <Loading rows={3} /> : null}
+
+      {data ? (
+        <>
+          <p className="faint small" style={{ marginBottom: "0.75rem" }}>
+            {data.total} need{data.total === 1 ? "" : "s"}
+            {search ? ` matching “${search}”` : ""}
+            {data.total > 0 ? ` · page ${page} of ${totalPages}` : ""}
+          </p>
+
+          {data.items.length === 0 ? (
+            <Empty>
+              <p>No needs match that filter.</p>
+              <button type="button" onClick={() => onSearchChange("")}>
+                Clear the filter
+              </button>
+            </Empty>
+          ) : (
+            <div style={{ opacity: query.isFetching ? 0.6 : 1, transition: "opacity 120ms" }}>
+              {data.items.map((cluster, index) => (
+                <RankedRow
+                  key={cluster.clusterId}
+                  cluster={cluster}
+                  // Rank is position in the whole filtered ranking, not on this page.
+                  rank={(page - 1) * data.pageSize + index + 1}
+                  expanded={expanded === cluster.clusterId}
+                  highlighted={focusId === cluster.clusterId}
+                  onToggle={() =>
+                    setExpanded(expanded === cluster.clusterId ? null : cluster.clusterId)
+                  }
+                />
+              ))}
+            </div>
+          )}
+
+          {totalPages > 1 ? (
+            <nav className="pagination" aria-label="Cluster pages">
+              <button type="button" onClick={() => goToPage(page - 1)} disabled={page <= 1}>
+                Previous
+              </button>
+              {pageNumbers(page, totalPages).map((n, i) =>
+                n === null ? (
+                  <span key={`gap-${i}`} className="faint">
+                    …
+                  </span>
+                ) : (
+                  <button
+                    key={n}
+                    type="button"
+                    onClick={() => goToPage(n)}
+                    className={n === page ? "primary" : undefined}
+                    aria-current={n === page ? "page" : undefined}
+                  >
+                    {n}
+                  </button>
+                ),
+              )}
+              <button
+                type="button"
+                onClick={() => goToPage(page + 1)}
+                disabled={page >= totalPages}
+              >
+                Next
+              </button>
+            </nav>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+/** Windowed page numbers: first, last, and a span around the current page. */
+function pageNumbers(current: number, total: number): Array<number | null> {
+  if (total <= 7) return Array.from({ length: total }, (_, i) => i + 1);
+
+  const pages = new Set<number>([1, total, current, current - 1, current + 1]);
+  const sorted = [...pages].filter((n) => n >= 1 && n <= total).sort((a, b) => a - b);
+
+  const out: Array<number | null> = [];
+  let previous = 0;
+  for (const n of sorted) {
+    if (previous && n - previous > 1) out.push(null);
+    out.push(n);
+    previous = n;
+  }
+  return out;
+}
+
 function RankedRow({
   cluster,
   rank,
   expanded,
+  highlighted = false,
   onToggle,
 }: {
   cluster: RankedCluster;
   rank: number;
   expanded: boolean;
+  /** Arrived at via a deep link - mark it so it is findable among ten rows. */
+  highlighted?: boolean;
   onToggle: () => void;
 }) {
   return (
-    <div className="ranked-row">
+    <div
+      id={`cluster-${cluster.clusterId}`}
+      className={`ranked-row${highlighted ? " highlighted" : ""}`}
+    >
       <div className="rank-number">{rank}</div>
       <ScorePill score={cluster.score} />
       <div style={{ minWidth: 0 }}>

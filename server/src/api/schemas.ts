@@ -82,6 +82,20 @@ export const TopClustersQuerySchema = z.object({
   status: z.enum(CLUSTER_STATUSES).optional(),
 });
 
+export const ClusterPageQuerySchema = z.object({
+  search: z.string().trim().max(200).optional(),
+  themeId: z.string().max(100).optional(),
+  status: z.enum(CLUSTER_STATUSES).optional(),
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(100).default(10),
+  /**
+   * A cluster id to locate within this filtered ranking. The server answers
+   * which page it falls on, which is the only way a client holding just an id
+   * can deep-link to the right page.
+   */
+  focus: z.string().max(100).optional(),
+});
+
 export const TrendQuerySchema = z.object({
   days: z.coerce.number().int().min(7).max(365).default(90),
 });

@@ -1,7 +1,8 @@
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { useQuery, keepPreviousData } from "@tanstack/react-query";
 import { api } from "../api/client";
+import { useDebounced } from "../hooks/useDebounced";
 import type { SubmitterType } from "../api/types";
 import {
   Badge,
@@ -13,16 +14,6 @@ import {
   SubmitterBadge,
   relativeTime,
 } from "../components/common";
-
-/** Debounce so typing in the search box does not fire a request per keystroke. */
-function useDebounced<T>(value: T, ms = 300): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const timer = setTimeout(() => setDebounced(value), ms);
-    return () => clearTimeout(timer);
-  }, [value, ms]);
-  return debounced;
-}
 
 export function BrowsePage() {
   const [params, setParams] = useSearchParams();

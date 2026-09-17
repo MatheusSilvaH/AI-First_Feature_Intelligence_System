@@ -203,7 +203,15 @@ export function RequestDetailPage() {
             <section className="card">
               <h2>Cluster</h2>
               <p className="small">
-                <Link to={`/dashboard?cluster=${cluster.id}`}>{cluster.title}</Link>
+                {/* Deep-links by stable id, never by title, so renaming a
+                    cluster cannot break the link. The dashboard resolves which
+                    page the id falls on. */}
+                <Link
+                  to={`/dashboard?cluster=${encodeURIComponent(cluster.id)}`}
+                  title="See how this need ranks on the dashboard"
+                >
+                  {cluster.title}
+                </Link>
               </p>
               <p className="small muted">{cluster.canonicalNeed}</p>
               <div className="row">

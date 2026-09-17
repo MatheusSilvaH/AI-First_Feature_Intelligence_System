@@ -1,5 +1,6 @@
 import type {
   ClusterDetail,
+  ClusterPage,
   DashboardData,
   DecisionBrief,
   EmergingNeeds,
@@ -166,6 +167,28 @@ export const api = {
       if (value !== undefined) query.set(key, String(value));
     }
     return call<{ clusters: RankedCluster[] }>(`/analytics/top?${query.toString()}`);
+  },
+
+  /**
+   * One page of the ranked cluster list. Search and paging happen in SQL over
+   * the whole dataset - a ranked cluster carries its score rationale (~1.4KB
+   * each), so shipping every cluster to page client-side would be a
+   * multi-megabyte payload once the corpus grows.
+   *
+   * `focus` asks the server where a given cluster id sits in this ranking, so
+   * a deep link holding only an id lands on the right page in one round trip.
+   */
+  rankedClusters: (params: {
+    search?: string;
+    page?: number;
+    pageSize?: number;
+    focus?: string;
+  }) => {
+    const query = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return call<ClusterPage>(`/analytics/clusters?${query.toString()}`);
   },
 
   emergingNeeds: (refresh = false) =>

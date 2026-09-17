@@ -179,8 +179,24 @@ export interface ThemeBreakdown {
   topClusters: Array<{ clusterId: string; title: string; score: number }>;
 }
 
+/** Where a specific cluster sits in the current ranking, resolved server-side. */
+export interface ClusterLocation {
+  clusterId: string;
+  found: boolean;
+  rank: number | null;
+  page: number | null;
+}
+
+export interface ClusterPage {
+  items: RankedCluster[];
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  focus: ClusterLocation | null;
+}
+
 export interface DashboardData {
-  topClusters: RankedCluster[];
   byTheme: ThemeBreakdown[];
   volumeTrend: Array<{
     period: string;

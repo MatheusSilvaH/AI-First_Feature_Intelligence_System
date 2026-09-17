@@ -291,7 +291,8 @@ Base `/api`. Errors are `{ error: { code, message, details? } }`.
 | `POST` | `/review/merge-suggestions/:id/accept` \| `/reject` | Resolve a suggestion |
 | `POST` | `/review/briefs/:id/revise` | Edit or approve a brief |
 | `POST` | `/review/updates/:id/sent` | Mark a message sent |
-| `GET` | `/analytics/dashboard` | Whole dashboard in one call |
+| `GET` | `/analytics/dashboard` | Charts and metrics (not the ranked list — that pages separately) |
+| `GET` | `/analytics/clusters` | Paged, searchable ranked list. `search`, `page`, `pageSize`, `focus=<clusterId>` |
 | `GET` | `/analytics/top` · `/by-theme` · `/metrics` · `/activity` | |
 | `GET` | `/analytics/emerging` | Cached; `?refresh=true` recomputes |
 | `GET`/`PUT` | `/settings/scoring` | Read and re-weight the ranking |

@@ -515,6 +515,19 @@ button.subtle:hover:not(:disabled) {
 .ranked-row:last-child {
   border-bottom: none;
 }
+
+/* The row a deep link landed on. Needs to be findable among ten near-identical
+   rows without relying on scroll position alone. */
+.ranked-row.highlighted {
+  background: color-mix(in srgb, var(--accent-dim) 40%, transparent);
+  border-left: 3px solid var(--accent);
+  border-bottom-color: var(--accent-dim);
+  margin-left: -1.25rem;
+  margin-right: -1.25rem;
+  padding-left: calc(1.25rem - 3px);
+  padding-right: 1.25rem;
+  border-radius: var(--radius-sm);
+}
 .rank-number {
   font-variant-numeric: tabular-nums;
   color: var(--text-faint);

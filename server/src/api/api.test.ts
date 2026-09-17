@@ -232,15 +232,16 @@ describe("dashboard and settings", () => {
     await drainQueue();
   });
 
-  it("serves the whole dashboard in one call", async () => {
+  it("serves the charts and metrics in one call", async () => {
     const res = await request(app).get("/api/analytics/dashboard");
 
     expect(res.status).toBe(200);
-    expect(res.body.topClusters.length).toBeGreaterThan(0);
-    expect(res.body.topClusters[0].rationale).toBeTruthy();
     expect(res.body.byTheme.length).toBeGreaterThan(0);
     expect(res.body.metrics.totalRequests).toBe(1);
     expect(res.body.submitterMix).toHaveLength(4);
+    // The ranked list has its own paged endpoint, so paging must not drag the
+    // charts along behind it.
+    expect(res.body.topClusters).toBeUndefined();
   });
 
   it("reports consolidation as a measurable metric", async () => {
@@ -282,6 +283,189 @@ describe("dashboard and settings", () => {
       .send({ config: { componentWeights: { severity: "a lot" } } });
 
     expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/analytics/clusters", () => {
+  /**
+   * Builds a corpus of distinctly-named single-request clusters so ranking,
+   * paging and filtering can be asserted precisely. Each title is unique, so a
+   * search term picks out exactly the rows it should.
+   */
+  const seedClusters = async (count: number) => {
+    for (let i = 0; i < count; i++) {
+      await request(app)
+        .post("/api/requests")
+        .send(
+          validBody({
+            title: `Widget number ${String(i).padStart(2, "0")}`,
+            description: `A distinct request about widget ${i} that describes a problem taking hours of manual effort every week.`,
+            submitter: customer({ email: `user${i}@acme.example` }),
+          }),
+        );
+    }
+    await drainQueue();
+  };
+
+  beforeEach(() => resetDb());
+
+  it("pages the ranked list ten at a time by default", async () => {
+    await seedClusters(23);
+
+    const first = await request(app).get("/api/analytics/clusters");
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(10);
+    expect(first.body.page).toBe(1);
+    expect(first.body.totalPages).toBe(3);
+    expect(first.body.total).toBeGreaterThanOrEqual(20);
+
+    const last = await request(app).get("/api/analytics/clusters?page=3");
+    expect(last.body.page).toBe(3);
+    expect(last.body.items.length).toBeGreaterThan(0);
+    expect(last.body.items.length).toBeLessThanOrEqual(10);
+  });
+
+  it("orders by score descending, and pages do not overlap or skip", async () => {
+    await seedClusters(23);
+
+    const pages = await Promise.all(
+      [1, 2, 3].map((p) => request(app).get(`/api/analytics/clusters?page=${p}`)),
+    );
+    const ids = pages.flatMap((r) => r.body.items.map((c: { clusterId: string }) => c.clusterId));
+    const scores = pages.flatMap((r) => r.body.items.map((c: { score: number }) => c.score));
+
+    expect(new Set(ids).size).toBe(ids.length); // no duplicates across pages
+    expect(ids).toHaveLength(pages[0]!.body.total); // nothing skipped
+    expect([...scores].sort((a, b) => b - a)).toEqual(scores); // descending
+  });
+
+  it("filters against the whole dataset and re-paginates the result", async () => {
+    await seedClusters(23);
+
+    // Derive the expected match count from the data rather than asserting a
+    // hand-computed number, so the test states the property under test instead
+    // of encoding an arithmetic assumption about the fixture.
+    const everything = await request(app).get("/api/analytics/clusters?pageSize=100");
+    const expected = (everything.body.items as Array<{ title: string }>).filter((c) =>
+      c.title.toLowerCase().includes("number 1"),
+    ).length;
+    expect(expected).toBeGreaterThan(4); // must genuinely span more than one page
+
+    const pageSize = 4;
+    const first = await request(app).get(
+      `/api/analytics/clusters?search=number%201&pageSize=${pageSize}`,
+    );
+
+    expect(first.status).toBe(200);
+    // The filter applied to the whole corpus, not just to page one's rows.
+    expect(first.body.total).toBe(expected);
+    expect(first.body.total).toBeLessThan(everything.body.total);
+    // ...and the filtered set was re-paginated rather than page-one-filtered.
+    expect(first.body.totalPages).toBe(Math.ceil(expected / pageSize));
+    expect(first.body.items).toHaveLength(pageSize);
+
+    const last = await request(app).get(
+      `/api/analytics/clusters?search=number%201&pageSize=${pageSize}&page=${first.body.totalPages}`,
+    );
+    expect(last.body.items.length).toBe(expected - (first.body.totalPages - 1) * pageSize);
+    expect(
+      (last.body.items as Array<{ title: string }>).every((c) =>
+        c.title.toLowerCase().includes("number 1"),
+      ),
+    ).toBe(true);
+  });
+
+  it("matches case-insensitively", async () => {
+    await seedClusters(3);
+
+    const lower = await request(app).get("/api/analytics/clusters?search=widget");
+    const upper = await request(app).get("/api/analytics/clusters?search=WIDGET");
+    expect(upper.body.total).toBe(lower.body.total);
+    expect(lower.body.total).toBeGreaterThan(0);
+  });
+
+  it("treats LIKE wildcards in the search box as literal characters", async () => {
+    await seedClusters(5);
+
+    // Were '%' passed through unescaped it would match every row.
+    const res = await request(app).get("/api/analytics/clusters?search=%25");
+    expect(res.body.total).toBe(0);
+  });
+
+  it("locates a cluster that is not on page one, and serves that page", async () => {
+    await seedClusters(23);
+
+    const lastPage = await request(app).get("/api/analytics/clusters?page=3");
+    const target = lastPage.body.items.at(-1) as { clusterId: string };
+
+    // Ask for page 1 while focusing a cluster that ranks near the bottom.
+    const res = await request(app).get(
+      `/api/analytics/clusters?page=1&focus=${target.clusterId}`,
+    );
+
+    expect(res.body.focus.found).toBe(true);
+    expect(res.body.focus.page).toBeGreaterThan(1);
+    expect(res.body.page).toBe(res.body.focus.page);
+    expect(
+      res.body.items.some((c: { clusterId: string }) => c.clusterId === target.clusterId),
+    ).toBe(true);
+  });
+
+  it("reports a merged or deleted cluster id as not found, without erroring", async () => {
+    await seedClusters(3);
+
+    const res = await request(app).get("/api/analytics/clusters?focus=clu_gone");
+
+    expect(res.status).toBe(200);
+    expect(res.body.focus.found).toBe(false);
+    expect(res.body.focus.page).toBeNull();
+    // The list still renders rather than collapsing to an error.
+    expect(res.body.items.length).toBeGreaterThan(0);
+  });
+
+  it("clamps a page beyond the end instead of returning nothing", async () => {
+    await seedClusters(12);
+
+    const res = await request(app).get("/api/analytics/clusters?page=99");
+    expect(res.body.page).toBe(res.body.totalPages);
+    expect(res.body.items.length).toBeGreaterThan(0);
+  });
+
+  it("returns an empty page rather than an error when nothing matches", async () => {
+    await seedClusters(3);
+
+    const res = await request(app).get("/api/analytics/clusters?search=nothingmatchesthis");
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(0);
+    expect(res.body.items).toEqual([]);
+    expect(res.body.totalPages).toBe(1);
+  });
+
+  it("rejects an oversized page size", async () => {
+    const res = await request(app).get("/api/analytics/clusters?pageSize=5000");
+    expect(res.status).toBe(400);
+  });
+
+  it("never lists a cluster that has no requests left in it", async () => {
+    await seedClusters(3);
+
+    // Re-running analysis is the real-world path to an orphan: a job that
+    // fails partway is retried from the top. Re-analysing must not strand the
+    // cluster the request already belonged to.
+    const before = await request(app).get("/api/analytics/clusters?pageSize=100");
+    const requestId = (
+      await request(app).get(`/api/requests?pageSize=1`)
+    ).body.items[0].id as string;
+
+    const { analyzeRequest } = await import("../services/intelligence/pipeline.js");
+    await analyzeRequest(requestId);
+
+    const after = await request(app).get("/api/analytics/clusters?pageSize=100");
+
+    expect(after.body.total).toBe(before.body.total);
+    expect(
+      (after.body.items as Array<{ requestCount: number }>).every((c) => c.requestCount > 0),
+    ).toBe(true);
   });
 });
 
