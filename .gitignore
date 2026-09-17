@@ -148,3 +148,6 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Generated OpenAPI spec (emit with: npm run openapi --workspace=server)
+server/openapi.json

@@ -208,3 +208,38 @@ run in SQL.
   keep the full score-ordered list, jump to the cluster's true page, and
   highlight plus expand it, which satisfies the acceptance criteria and
   preserves the ranking context a dashboard exists to show.
+
+[2026-09-17T17:30:00Z]
+PROMPT: Show me the swagger for this API.
+RESPONSE: There was none - the API was only documented as a markdown table in
+the README - so I built it.
+  - server/src/api/openapi.ts generates an OpenAPI 3.1 document. Request bodies
+    and query parameters are derived from the same Zod schemas the server
+    validates with (zod 4's native z.toJSONSchema), so the docs cannot drift
+    from what is actually enforced; response shapes are hand-declared because
+    they come from repository row mappers, not schema objects.
+  - Served at GET /api/openapi.json, browsable Swagger UI at /api/docs
+    (swagger-ui-express, assets bundled locally so it works offline). helmet's
+    default CSP had to be disabled on that route only - it blocks Swagger UI's
+    inline styles and blob worker and renders a blank page.
+  - 24 paths / 26 operations / 14 schemas.
+  - Validated with an external linter (@redocly/cli) rather than trusting my own
+    structure: first run reported 28 errors and 34 warnings. Fixed all of them:
+      * `nullable: true` is OpenAPI 3.0 syntax and invalid in 3.1 - replaced
+        with anyOf union types (2 occurrences).
+      * Every operation lacked declared security. Rather than silence the rule,
+        added an explicit root-level `security: []`, which documents the true
+        state: this API has no authentication yet.
+      * Added auto-derived operationIds (client generators need them, and a
+        hand-maintained list drifts) and default 429/500 responses via a
+        finalize pass over the paths.
+    Now lints clean.
+  - 8 tests guard the spec against rot: it is served, every mounted route is
+    documented, every operation has a tag/summary/responses, no dangling $refs,
+    request bodies actually reflect the Zod bounds, and no $schema key leaks in.
+    Suite 62 -> 70.
+  - `npm run openapi --workspace=server` emits the file; it is git-ignored since
+    it is generated rather than authored.
+  - Documented a genuine API wart while writing it up: GET /api/clusters returns
+    *themes*, not clusters - a misnomer inherited from an earlier iteration. The
+    spec says so rather than papering over it.

@@ -8,6 +8,8 @@ import type { Request, Response } from "express";
 import { env, isTest } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { getDb } from "./db/index.js";
+import swaggerUi from "swagger-ui-express";
+import { buildOpenApiDocument } from "./api/openapi.js";
 import { errorHandler, notFoundHandler } from "./api/middleware/errorHandler.js";
 import { requestsRouter } from "./api/routes/requests.routes.js";
 import { clustersRouter, reviewRouter } from "./api/routes/clusters.routes.js";
@@ -49,6 +51,27 @@ export function createApp() {
       queueDepth: jobsRepo.pendingCount(),
     });
   });
+
+  // --- API documentation ---------------------------------------------------
+  // Built once at boot: the document is derived from the Zod schemas, which do
+  // not change at runtime.
+  const openApiDocument = buildOpenApiDocument();
+
+  app.get("/api/openapi.json", (_req, res) => {
+    res.json(openApiDocument);
+  });
+
+  app.use(
+    "/api/docs",
+    // Swagger UI inlines its own styles and uses a blob worker; helmet's
+    // default CSP blocks both, which renders a blank page.
+    helmet({ contentSecurityPolicy: false }),
+    swaggerUi.serve,
+    swaggerUi.setup(openApiDocument, {
+      customSiteTitle: "Feature Intelligence API",
+      swaggerOptions: { docExpansion: "list", defaultModelsExpandDepth: 1 },
+    }),
+  );
 
   app.use("/api/requests", requestsRouter);
   app.use("/api/clusters", clustersRouter);

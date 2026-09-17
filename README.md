@@ -273,6 +273,10 @@ Retries use exponential backoff with jitter and honour `retry-after` on rate lim
 
 ## API
 
+**Interactive docs: http://localhost:4000/api/docs** · spec at `/api/openapi.json`
+
+OpenAPI 3.1, generated from the same Zod schemas the server validates with, so the documentation cannot drift from what is actually enforced. `npm run openapi --workspace=server` writes it to a file for client codegen; it is git-ignored because it is generated, not authored.
+
 Base `/api`. Errors are `{ error: { code, message, details? } }`.
 
 | Method | Path | Notes |
